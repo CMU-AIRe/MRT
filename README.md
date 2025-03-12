@@ -36,13 +36,13 @@ This repository contains the code for our paper titled "Optimizing Test-Time Com
 If you use our work or codebase in your research, please cite our paper:
 
 ```bibtex
-@misc{,
-      title={Optimizing Test-Time Compute via Meta Reinforcement Finetuning},
-      author={Yuxiao Qu*, Matthew Y. R. Yang*, Amrith Setlur, Lewis Tunstall, Edward Emanuel Beeching, Ruslan Salakhutdinov, Aviral Kumar},
+@misc{qu2025optimizingtesttimecomputemeta,
+      title={Optimizing Test-Time Compute via Meta Reinforcement Fine-Tuning},
+      author={Yuxiao Qu and Matthew Y. R. Yang and Amrith Setlur and Lewis Tunstall and Edward Emanuel Beeching and Ruslan Salakhutdinov and Aviral Kumar},
       year={2025},
-      eprint={},
+      eprint={2503.07572},
       archivePrefix={arXiv},
       primaryClass={cs.LG},
-      url={},
+      url={https://arxiv.org/abs/2503.07572},
 }
 ```
