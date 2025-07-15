@@ -30,8 +30,9 @@ git clone https://github.com/huggingface/open-r1.git
 git clone https://github.com/volcengine/verl.git
 ```
 
-2. Modify the Reward Function
-   Locate the reward computation script:
+### 2. Modify the Reward Function
+
+Locate the reward computation script:
 
 Open-R1: `open_r1/reward/reward_fn.py` (or your custom reward provider)
 
@@ -55,8 +56,9 @@ def compute_rewards(samples, **kwargs):
 
 Ensure that advantages is returned or passed to the trainer instead of recomputing group-based baselines.
 
-3. Disable Group-Based Baseline in Advantage Computation
-   In the trainer:
+### 3. Disable Group-Based Baseline in Advantage Computation
+
+In the trainer:
 
 Open-R1: Edit `open_r1/trainer/ppo_trainer.py` (look for compute_advantages).
 
@@ -74,8 +76,9 @@ adv = rewards - termination_rewards
 
 Make sure termination_rewards is correctly batched and broadcasted.
 
-4. Training
-   Run RL as usual, specifying your modified reward function:
+### 4. Training
+
+Run RL as usual, specifying your modified reward function:
 
 ```
 # Open-R1 example
