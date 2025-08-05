@@ -7,15 +7,15 @@ This README provide guidelines for modifying **[Hugging Face Open-R1](https://gi
 Standard GRPO-based or PPO-based RL methods in Open-R1 and VERL compute **advantages** using a group baseline, typically the mean reward across sampled rollouts in a group:
 
 $$
-A(s, a) = R(s, a) - R_group
+A(s, a) = R(s, a) - R_{group}
 $$
 
-where $R(s, a)$ is the reward for a given rollout, and $R_group$ is the average reward across rollouts for the same prompt.
+where $R(s, a)$ is the reward for a given rollout, and $R_{group}$ is the average reward across rollouts for the same prompt.
 
 In **MRT**, we replace the group-based baseline with a **termination reward baseline**:
 
 $$
-A(s, a) = R(s, a) - R_termination
+A(s, a) = R(s, a) - R_{termination}
 $$
 
 where `R_termination` is the reward assigned to the termination action. This allows the model to optimize relative to a stable, per-sequence baseline rather than cross-rollout averages.
