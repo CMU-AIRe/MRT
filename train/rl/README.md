@@ -45,8 +45,8 @@ def compute_rewards(samples, **kwargs):
     # Original rollout rewards
     rollout_rewards = get_original_rewards(samples)
 
-    # Get termination rewards (e.g., reward of EOS token or final state value)
-    termination_rewards = [r[-1] for r in rollout_rewards]  # final step reward per sample
+    # Compute termination reward
+    termination_rewards = get_termination_rewards(samples)
 
     # Use termination reward as baseline
     advantages = [r - term for r, term in zip(rollout_rewards, termination_rewards)]
