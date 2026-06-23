@@ -1,0 +1,14 @@
+MRT — Optimizing Test-Time Compute via Meta Reinforcement Finetuning
+Copyright (c) CMU-AIRe. Released under the MIT License (see LICENSE).
+
+This product vendors third-party software:
+
+  radixark/miles  (https://github.com/radixark/miles), commit 9437366e
+  Licensed under the Apache License, Version 2.0.
+  Vendored at: train/rl/miles/
+  Its license is retained at: train/rl/miles/LICENSE
+
+  MRT's modifications to miles are limited to a single in-place
+  temperature-division change (train/rl/miles_clone.patch) and are added in a
+  commit separate from the pristine vendor commit, so the delta is auditable
+  via `git diff`.

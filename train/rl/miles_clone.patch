@@ -1,0 +1,17 @@
+diff --git a/miles/backends/training_utils/loss_hub/logit_processors.py b/miles/backends/training_utils/loss_hub/logit_processors.py
+index 8fd7d8ad2..197ca087b 100644
+--- a/miles/backends/training_utils/loss_hub/logit_processors.py
++++ b/miles/backends/training_utils/loss_hub/logit_processors.py
+@@ -52,7 +52,11 @@ def get_responses(
+         logits = logits.view(-1, logits.size(-1))
+ 
+     if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
+-        logits = logits.div(args.rollout_temperature)
++        # paper_002_mrt patch: in-place div — the out-of-place copy duplicates the
++        # full [T, V] fp32 logits (~10 GiB at T=17K, V=151,936) and OOMs long-context
++        # runs; producers (matmul) do not need their output for backward, and autograd
++        # raises on genuinely unsafe in-place ops, so this is loud-fail safe.
++        logits = logits.div_(args.rollout_temperature)
+     if args.true_on_policy_mode:
+         if getattr(args, "bf16", False):
+             logits = logits.to(torch.bfloat16)

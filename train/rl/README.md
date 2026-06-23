@@ -1,89 +1,36 @@
-# Termination-Reward Baseline for RL in Open-R1 and VERL
+# MRT RL training (v0.1)
 
-This README provide guidelines for modifying **[Hugging Face Open-R1](https://github.com/huggingface/open-r1)** or **[VERL (Volcengine RL)](https://github.com/volcengine/verl)** to use **MRT** instead of the standard **group-based baseline** in reinforcement learning (RL) fine-tuning for language models.
+RL training + evaluation for the open-ended setting (Table 1, R1-Distill-Qwen-1.5B),
+implemented concretely on a vendored [`miles`](miles/) (Megatron-LM + SGLang). This
+supersedes the earlier framework-agnostic guideline with runnable code.
 
-## Overview
+**Full recipe → [`REPRODUCTION.md`](REPRODUCTION.md)** (method, assumptions, results,
+run commands, infra notes, and the **MRT-online** variant).
 
-Standard GRPO-based or PPO-based RL methods in Open-R1 and VERL compute **advantages** using a group baseline, typically the mean reward across sampled rollouts in a group:
+## The core idea
 
-$$
-A(s, a) = R(s, a) - R_{group}
-$$
+Standard GRPO computes advantages against a group baseline (mean reward across rollouts):
 
-where $R(s, a)$ is the reward for a given rollout, and $R_{group}$ is the average reward across rollouts for the same prompt.
+$$A(s, a) = R(s, a) - R_{group}$$
 
-In **MRT**, we replace the group-based baseline with a **termination reward baseline**:
+MRT adds a **progress bonus**: it rewards each thought episode by how much it raises the
+probability that a meta-prover (the model forced to terminate and answer *now*) reaches
+the correct answer. With the previous policy's prefix `c` and meta-prover `μ`,
 
-$$
-A(s, a) = R(s, a) - R_{termination}
-$$
+$$r_{\text{prg}}(z_j; c) = J_r\big(\mu(\cdot\mid z_j, c)\big) - J_r\big(\mu(\cdot\mid c)\big),$$
 
-where `R_termination` is the reward assigned to the termination action. This allows the model to optimize relative to a stable, per-sequence baseline rather than cross-rollout averages.
+and the trained reward is the outcome reward plus an α-weighted progress term. In code we
+estimate `J_r` from G forced-termination ("Time is up… `</think>`") rollouts and apply the
+bonus as a single end-of-trace scalar (the paper's plug-and-play form).
 
-## Implementation
+## Layout
 
-### 1. Clone Open-R1 or VERL
-
-```bash
-git clone https://github.com/huggingface/open-r1.git
-# or
-git clone https://github.com/volcengine/verl.git
-```
-
-### 2. Modify the Reward Function
-
-Locate the reward computation script:
-
-Open-R1: `open_r1/reward/reward_fn.py` (or your custom reward provider)
-
-VERL: `verl/rewards/base_reward.py` (extend or modify an existing reward class)
-
-Replace or wrap the existing compute_rewards() function:
-
-```
-def compute_rewards(samples, **kwargs):
-    # Original rollout rewards
-    rollout_rewards = get_original_rewards(samples)
-
-    # Compute termination reward
-    termination_rewards = get_termination_rewards(samples)
-
-    # Use termination reward as baseline
-    advantages = [r - term for r, term in zip(rollout_rewards, termination_rewards)]
-
-    return rollout_rewards, advantages
-```
-
-Ensure that advantages is returned or passed to the trainer instead of recomputing group-based baselines.
-
-### 3. Disable Group-Based Baseline in Advantage Computation
-
-In the trainer:
-
-Open-R1: Edit `open_r1/trainer/ppo_trainer.py` (look for compute_advantages).
-
-VERL: Edit `verl/algorithms/grpo.py or ppo.py`.
-
-```
-adv = rewards - rewards.mean()  # group-based baseline
-```
-
-with:
-
-```
-adv = rewards - termination_rewards
-```
-
-Make sure termination_rewards is correctly batched and broadcasted.
-
-### 4. Training
-
-Run RL as usual, specifying your modified reward function:
-
-```
-# Open-R1 example
-python train_rl.py --reward_fn termination_baseline_reward
-
-# VERL example
-python examples/grpo_trainer/run_termination_baseline.sh
-```
+- `mrt_plugin/` — GRPO baseline (`configs/arm_a.sh`), MRT (`arm_b.sh`, Algorithm 2), and
+  **MRT-online** (`arm_b_online.sh`, on-policy branched per-episode progress); reward
+  (`reward_post.py`, `reward_math.py`), episode segmentation, prompts, prefix/data prep.
+- `eval/` — vLLM pass@1 harness (n=64), benchmark builders, grader, vocab-trim.
+- `jobs/` — Slurm sbatch wrappers (4h singleton chains, offline checkpoint conversion).
+- `miles/` — vendored radixark/miles @ `9437366e` (Apache-2.0), pristine in its own
+  commit; `miles_clone.patch` is the one-line MRT change to it (an in-place
+  temperature-div that avoids a long-context OOM).
+- `tests/` — CPU unit tests (reward wiring, segmentation, token tiling).
