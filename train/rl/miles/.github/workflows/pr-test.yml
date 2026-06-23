@@ -1,0 +1,201 @@
+name: PR Test
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  workflow_dispatch:
+    inputs:
+      infinite_run:
+        description: 'Run training infinitely'
+        required: false
+        type: boolean
+        default: false
+      ci_megatron_pr:
+        description: 'Megatron-LM branch/commit (default: miles-main)'
+        required: false
+        type: string
+        default: 'miles-main'
+      ci_sglang_pr:
+        description: 'SGLang branch/commit (default: sglang-miles)'
+        required: false
+        type: string
+        default: 'sglang-miles'
+      ci_image_tag:
+        description: 'Miles Docker image tag (default: dev)'
+        required: false
+        type: string
+        default: 'dev'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# PR labels are passed through to run_suite.py as raw `run-ci-<X>` strings via
+# `--labels`. run_suite.py strips the `run-ci-` prefix internally and ignores
+# any label that does not start with `run-ci-` (see tests/ci/run_suite.py
+# `strip_run_ci_prefix`). For `workflow_dispatch`, no PR labels exist, so the
+# `--labels` list collapses to empty; `--match-all-labels` is then added
+# unconditionally to bypass the labels predicate inside run_suite.py and run
+# every enabled test in the suite.
+#
+# The `bypass-fastfail` PR label opts a PR out of fast-fail on two levels: GPU
+# stages run even when stage-a-cpu fails (cross-stage), and every stage passes
+# `--continue-on-error` so one failing test no longer stops the rest of its
+# suite (within-stage). One CI run then surfaces every failure.
+
+jobs:
+  resolve-ci-image:
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    runs-on: ubuntu-latest
+    outputs:
+      container_image: ${{ steps.resolve.outputs.container_image }}
+    steps:
+      - name: Resolve CI image
+        id: resolve
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
+        run: |
+          CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
+          if [ -n "$PR_BODY" ]; then
+            PR_CI_IMAGE_TAG=$(echo "$PR_BODY" | grep -m1 -oP '^ci-image-tag:\s+\K\S+' || true)
+            [ -z "$CI_IMAGE_TAG" ] && [ -n "$PR_CI_IMAGE_TAG" ] && CI_IMAGE_TAG="$PR_CI_IMAGE_TAG"
+          fi
+          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="dev"
+          if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
+            exit 1
+          fi
+          echo "container_image=radixark/miles:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved CI image: radixark/miles:${CI_IMAGE_TAG}"
+
+  # Stage A: CPU-only fast tests (always runs on PR)
+  # Runs on GitHub-hosted ubuntu-latest (cpu_runner: true) to avoid
+  # occupying GPU-fleet runner slots.
+  stage-a-cpu:
+    needs: [resolve-ci-image]
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1, 2, 3]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      cpu_runner: true
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
+    secrets: inherit
+
+  # Stage B: CPU-only bucket (currently empty; reserved for future CPU tests
+  # that don't fit stage-a-cpu's fast budget). Always runs on PR. Empty result
+  # exits 0 in run_suite.py (see tests/ci/run_suite.py L149-L151).
+  stage-b-cpu:
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      cpu_runner: true
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
+    secrets: inherit
+
+  stage-b-2-gpu-h200:
+    needs: [resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h200", "2gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-b-2-gpu-h200
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
+    secrets: inherit
+
+  stage-c-8-gpu-h100:
+    needs: [resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h100", "8gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h100
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
+    secrets: inherit
+
+  stage-c-4-gpu-h200:
+    needs: [resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1, 2]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h200", "4gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 3
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
+    secrets: inherit
+
+  stage-c-2-gpu-h200:
+    needs: [resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+        (needs.stage-a-cpu.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'bypass-fastfail'))) &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1]
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h200", "2gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-2-gpu-h200
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ contains(github.event.pull_request.labels.*.name, 'bypass-fastfail') && '--continue-on-error' || '' }}
+    secrets: inherit
